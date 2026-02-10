@@ -1,0 +1,140 @@
+version: '1.0'
+
+networks:
+  rln_network:
+    driver: bridge
+
+services:
+  bitcoind:
+    image: ruimarinho/bitcoin-core:24.0.1
+    container_name: bitcoind
+    restart: unless-stopped
+    ports:
+      - '18443:18443'
+    volumes:
+      - ./data/bitcoin_data:/home/bitcoin/.bitcoin
+    command:
+      - -printtoconsole
+      - -regtest=1
+      - -server=1
+      - -rest=1
+      - -rpcuser=btcuser
+      - -rpcpassword=btcpass
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -txindex=1
+      - -wallet=devwallet
+      - -fallbackfee=0.0001
+    healthcheck:
+      test: >
+        bitcoin-cli -regtest -rpcuser=btcuser -rpcpassword=btcpass getblockchaininfo || exit 1
+      interval: 5s
+      retries: 10
+    networks:
+      - rln_network
+
+  bitcoind-init:
+    image: ruimarinho/bitcoin-core:24.0.1
+    container_name: bitcoind-init
+    depends_on:
+      - bitcoind
+    networks:
+      - rln_network
+    entrypoint: ['/bin/sh', '-c']
+    command: |
+      alias bcli="bitcoin-cli -regtest -rpcconnect=bitcoind -rpcuser=btcuser -rpcpassword=btcpass"
+
+      echo "Checking wallet..."
+      WALLET_LIST=$$(bcli listwallets)
+      if ! echo "$$WALLET_LIST" | grep -q "devwallet"; then
+        echo "Creating wallet 'devwallet'..."
+        bcli createwallet "devwallet" || echo "Wallet already exists"
+      else
+        echo "Wallet 'devwallet' already exists."
+      fi
+
+      echo "Loading wallet..."
+      bcli loadwallet "devwallet" || echo "Wallet already loaded"
+
+      BLOCK_COUNT=$$(bcli getblockcount)
+      if [ "$$BLOCK_COUNT" -lt 101 ]; then
+        ADDR=$$(bcli getnewaddress)
+        echo "Mining 101 blocks to $$ADDR..."
+        bcli generatetoaddress 101 "$$ADDR"
+      fi
+
+      echo "Initialization complete."
+
+  # Alice
+  rgb-node-alice:
+    image: bitlightlabs/rln-ldk-node:latest
+    platform: linux/amd64
+    container_name: rgb-node-alice
+    restart: unless-stopped
+    depends_on:
+      - bitcoind-init
+    ports:
+      - '8500:8500'
+      - '9735:9735'
+    volumes:
+      - ./data/rgb_node_data/alice:/data
+    command:
+      - rgbldkd
+      - server
+      - --listen
+      - 0.0.0.0:8500
+      - --allow-non-loopback-listen
+      - --data-dir
+      - /data
+      - --log-to-stdout
+      - --network
+      - regtest
+      - --bitcoind-rpc
+      - bitcoind:18443
+      - --bitcoind-rpc-user
+      - btcuser
+      - --bitcoind-rpc-password
+      - btcpass
+      - --bitcoind-rest
+      - bitcoind:18443
+      - --ldk-listen
+      - 0.0.0.0:9735
+    networks:
+      - rln_network
+
+  # Bob
+  rgb-node-bob:
+    image: bitlightlabs/rln-ldk-node:latest
+    platform: linux/amd64
+    container_name: rgb-node-bob
+    restart: unless-stopped
+    depends_on:
+      - bitcoind-init
+    ports:
+      - '8501:8500'
+      - '9736:9735'
+    volumes:
+      - ./data/rgb_node_data/bob:/data
+    command:
+      - rgbldkd
+      - server
+      - --listen
+      - 0.0.0.0:8500
+      - --allow-non-loopback-listen
+      - --data-dir
+      - /data
+      - --log-to-stdout
+      - --network
+      - regtest
+      - --bitcoind-rpc
+      - bitcoind:18443
+      - --bitcoind-rpc-user
+      - btcuser
+      - --bitcoind-rpc-password
+      - btcpass
+      - --bitcoind-rest
+      - bitcoind:18443
+      - --ldk-listen
+      - 0.0.0.0:9735
+    networks:
+      - rln_network
